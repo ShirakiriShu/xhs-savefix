@@ -37,7 +37,7 @@ def reach_path(poster_type, company):
 
 def http_json(url, payload, headers):
     req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=600) as r:
         raw = r.read()
         if r.headers.get('Content-Encoding') == 'gzip':
             raw = gzip.decompress(raw)

@@ -27,7 +27,7 @@ def call_llm(prompt):
                          'messages': [{'role': 'user', 'content': prompt}]}).encode(),
         headers={'Authorization': 'Bearer ' + KEY, 'anthropic-version': '2023-06-01',
                  'Content-Type': 'application/json'}, method='POST')
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=600) as r:
         raw = r.read()
         if r.headers.get('Content-Encoding') == 'gzip':
             raw = gzip.decompress(raw)

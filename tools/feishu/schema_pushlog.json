@@ -1,0 +1,9 @@
+[
+  {"name":"日期","type":"datetime"},
+  {"name":"批次","type":"text"},
+  {"name":"目标群","type":"text"},
+  {"name":"线索数量","type":"number","style":{"type":"plain","precision":0}},
+  {"name":"消息ID","type":"text"},
+  {"name":"是否成功","type":"checkbox"},
+  {"name":"错误信息","type":"text"}
+]

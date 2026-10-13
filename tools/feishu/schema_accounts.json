@@ -1,0 +1,13 @@
+[
+  {"name":"user_id","type":"text","description":"去重主键"},
+  {"name":"昵称","type":"text"},
+  {"name":"小红书号","type":"text"},
+  {"name":"主页链接","type":"url"},
+  {"name":"账号类型","type":"select","multiple":false,"options":[{"name":"公司官方"},{"name":"员工"},{"name":"中介猎头"},{"name":"个人"},{"name":"未知"}]},
+  {"name":"公司/机构","type":"text"},
+  {"name":"简介联系方式","type":"text"},
+  {"name":"历史发帖数","type":"number","style":{"type":"plain","precision":0}},
+  {"name":"最近命中时间","type":"datetime"},
+  {"name":"关注价值评分","type":"number","style":{"type":"plain","precision":0}},
+  {"name":"备注","type":"text"}
+]

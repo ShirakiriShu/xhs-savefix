@@ -64,7 +64,9 @@ public class XhsSaveFix implements IXposedHookLoadPackage {
         "/search/onebox",    // 企业号/品牌聚合卡
         "/search/user",      // 用户维度搜索结果(直接搜出相关账号)
         "/note/imagefeed",   // 图文笔记正文
-        "/note/comment/list",// 评论区(求内推/简历发我/楼主回复的微信邮箱)
+        "/note/comment/list",      // 评论区(求内推/简历发我/楼主回复的微信邮箱)
+        "/comment/l1/sub/page",    // 楼中楼:父评论+子评论(v1/interaction/comment/l1/sub/page)
+        "/note/comment/sub_comments", // 楼中楼:子评论分页(v3)
         "/v10/note",         // 笔记详情 feed
         "/user/info",        // 用户主页详情(v3/user/info):昵称/简介/官网/联系方式 -> 公司归属+邮箱主力
         "/note/user/posted", // 用户发布的笔记(账号滚雪球:看这个号在发什么、@了谁)
@@ -221,6 +223,13 @@ public class XhsSaveFix implements IXposedHookLoadPackage {
                     }
                     Object chain = args[0];
                     Object request = XposedHelpers.callMethod(chain, "request");
+                    if (sApiClient == null) {
+                        try { // 记下真正服务 API 请求的 client(带鉴权链),楼中楼自动展开要用
+                            Object callObj = XposedHelpers.callMethod(chain, "call");
+                            Object cl = XposedHelpers.getObjectField(callObj, "client");
+                            if (cl != null) sApiClient = cl;
+                        } catch (Throwable ignored) {}
+                    }
                     Object response = XposedHelpers.callMethod(chain, "proceed", request);
                     try {
                         response = maybeVideoSaveFix(request, response);
@@ -252,11 +261,287 @@ public class XhsSaveFix implements IXposedHookLoadPackage {
                             XposedBridge.log("[xhs-harvest] inject interceptor failed: " + t);
                         }
                     }
+
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        // 记录宿主构建的 client(楼中楼自动展开要借它的签名链)
+                        try {
+                            Object built = param.getResult();
+                            if (built != null) rememberClient(built);
+                        } catch (Throwable ignored) {}
+                    }
                 });
             XposedBridge.log("[xhs-harvest] armed: hooked OkHttpClient$Builder.build()");
         } catch (Throwable t) {
             XposedBridge.log("[xhs-harvest] hook build() failed: " + t);
         }
+    }
+
+    // ---------- 1.7 楼中楼自动展开(借宿主 OkHttpClient 主动发子评论请求) ----------
+
+    // okhttp interceptor 本身是被动的;但模块跑在宿主进程里,可以拿着宿主构建的
+    // OkHttpClient 主动 enqueue 请求——x-s/x-t 签名由宿主自己的 interceptor 链完成,
+    // 等于"借宿主的手"发请求。响应天然流经我们注入的 interceptor,自动落盘。
+    // 场景:抓评论区时发现 sub_has_more 的楼,自动把每个楼的子评论拉全,不用人点"展开回复"。
+    private static final java.util.List<Object> HOST_CLIENTS =
+        java.util.Collections.synchronizedList(new java.util.ArrayList<Object>());
+    private static volatile Object sApiClient = null;   // 已验证能用的 client
+    private static final java.util.Set<String> EXPANDED_ROOTS =
+        java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+    private static final java.util.concurrent.ExecutorService EXPAND_POOL =
+        java.util.concurrent.Executors.newSingleThreadExecutor();
+    private static volatile long sLastExpandAt = 0L;
+    private static volatile int sExpandCount = 0;
+    private static final int EXPAND_MAX_PER_RUN = 60;   // 单进程会话上限,风控友好
+    // 人像节奏规则(见 tools/README.md):默认 stealth 档像人;harvest 目录建 FAST 文件切 verify 快档
+    private static volatile int sPauseCounter = 0;
+    private static volatile int sPauseAt = 5 + (int) (Math.random() * 5); // 每 5-9 个请求插一次阅读停顿
+
+    private static boolean fastMode() {
+        return new File(OUT_DIR_PRIMARY, "FAST").exists()
+            || new File(OUT_DIR_FALLBACK, "FAST").exists();
+    }
+
+    /** 下一个请求前要等的毫秒数:verify 0.8-1.5s;stealth 2-6s,每 5-9 个请求加 8-20s 阅读停顿 */
+    private static long nextGap() {
+        long g = fastMode() ? 800 + (long) (Math.random() * 700)
+                            : 2000 + (long) (Math.random() * 4000);
+        if (!fastMode() && ++sPauseCounter % sPauseAt == 0) {
+            g += 8000 + (long) (Math.random() * 12000);
+            sPauseAt = 5 + (int) (Math.random() * 5); // 重新随机下一个停顿点
+        }
+        return g;
+    }
+
+    // 已展开楼层持久化(宿主 filesDir),重装/重启不重复请求
+    private static volatile boolean sRootsLoaded = false;
+    private static File rootsFile() {
+        return new File(OUT_DIR_FALLBACK, "expanded_roots.txt");
+    }
+    private static void loadExpandedRoots() {
+        if (sRootsLoaded) return;
+        synchronized (EXPANDED_ROOTS) {
+            if (sRootsLoaded) return;
+            try {
+                java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.FileReader(rootsFile()));
+                String line;
+                while ((line = r.readLine()) != null) {
+                    line = line.trim();
+                    if (!line.isEmpty()) EXPANDED_ROOTS.add(line);
+                }
+                r.close();
+            } catch (Throwable ignored) {}
+            sRootsLoaded = true;
+        }
+    }
+    private static void persistRoot(String key) {
+        try {
+            java.io.FileWriter w = new java.io.FileWriter(rootsFile(), true);
+            w.write(key + "\n");
+            w.close();
+        } catch (Throwable ignored) {}
+    }
+
+    private static void rememberClient(Object client) {
+        synchronized (HOST_CLIENTS) {
+            if (HOST_CLIENTS.size() >= 8) HOST_CLIENTS.remove(0);
+            HOST_CLIENTS.add(client);
+        }
+    }
+
+    /** 捕获到主评论分页后,把其中 sub_has_more 的楼排队自动展开 */
+    private static void autoExpandSubComments(String url, String body) {
+        if (sExpandCount >= EXPAND_MAX_PER_RUN) return;
+        loadExpandedRoots();
+        final String noteId = queryParam(url, "note_id");
+        if (noteId == null) return;
+        try {
+            org.json.JSONObject o = new org.json.JSONObject(body);
+            org.json.JSONObject d = o.optJSONObject("data");
+            org.json.JSONArray cs = d == null ? null : d.optJSONArray("comments");
+            if (cs == null) return;
+            final java.util.List<String> roots = new java.util.ArrayList<>();
+            for (int i = 0; i < cs.length(); i++) {
+                org.json.JSONObject c = cs.optJSONObject(i);
+                if (c == null) continue;
+                org.json.JSONArray inl = c.optJSONArray("sub_comments");
+                int inline = inl == null ? 0 : inl.length();
+                boolean more = c.optBoolean("sub_has_more", false);
+                int cnt = c.optInt("sub_comment_count", 0);
+                // 注意:服务端对部分楼不下发 sub_has_more,且内联条与子评列表可能不同步
+                // (实测 sub_cnt=1、内联=1 但内联那条不在子评列表里),因此只要 cnt>0 就排队,
+                // expanded_roots 持久化兜底保证每楼只发一轮。
+                if (!more && cnt <= 0) continue;
+                String rid = c.optString("id", "");
+                if (rid.isEmpty()) continue;
+                String key = noteId + "/" + rid;
+                if (!EXPANDED_ROOTS.add(key)) continue;
+                persistRoot(key);
+                // 逆向结论(mr7/a + SubCommentLoadMoreBinderV2 链):宿主正常浏览时
+                // startId 恒为空串(n0()/x() 都返回 "");内联预览条不在子评分页序列里,
+                // 拿它当游标会取空。首采页永远 start="",续页由 queueNextSubPage 链式翻。
+                roots.add(rid + "|");
+            }
+            if (roots.isEmpty()) return;
+            final ClassLoader cl2 = appClassLoader;
+            EXPAND_POOL.execute(new Runnable() {
+                @Override
+                public void run() {
+                    for (String pair : roots) {
+                        String rid = pair;
+                        String startArg = "";
+                        int bar = pair.indexOf('|');
+                        if (bar > 0) { rid = pair.substring(0, bar); startArg = pair.substring(bar + 1); }
+                        if (sExpandCount >= EXPAND_MAX_PER_RUN) break;
+                        try {
+                            long gap = nextGap() - (System.currentTimeMillis() - sLastExpandAt);
+                            if (gap > 0) Thread.sleep(gap);
+                            sLastExpandAt = System.currentTimeMillis();
+                            sExpandCount++;
+                            persistRoot(noteId + "/" + rid);
+                            // 逆向确认的精确路径(与宿主 UI 完全同参):kr9.c 单例 → CommentService(edith)
+                            //   → getSubCommentsV3(noteId, rid, start="", num=5, source="", filter="",
+                            //     top="", top_v2="", page_context="", scene="", re_expand=false)
+                            // 签名/shield/公共参数/sid 全由宿主栈补;响应流经我们的 interceptor 落盘。
+                            Class<?> svcCls = cl2.loadClass(
+                                "com.xingin.matrix.comment.model.service.CommentService");
+                            Object registry = serviceRegistry(cl2);
+                            Object svc = XposedHelpers.callMethod(registry, "b", svcCls);
+                            Object obs = XposedHelpers.callMethod(svc, "getSubCommentsV3",
+                                noteId, rid, startArg, 5, "", "", "", "", "", "", Boolean.FALSE);
+                            XposedHelpers.callMethod(obs, "subscribe");
+                            XposedBridge.log("[xhs-harvest] auto-expand fired " + noteId + "/" + rid);
+                        } catch (Throwable t) {
+                            XposedBridge.log("[xhs-harvest] auto-expand err: " + t);
+                        }
+                    }
+                }
+            });
+        } catch (Throwable ignored) {}
+    }
+
+    private static Object noopConsumer(ClassLoader cl) {
+        try {
+            Class<?> c = cl.loadClass("io.reactivex.functions.Consumer");
+            return java.lang.reflect.Proxy.newProxyInstance(cl, new Class<?>[]{c},
+                new java.lang.reflect.InvocationHandler() {
+                    @Override
+                    public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] a) {
+                        return null;
+                    }
+                });
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    // 子评论每页服务端上限 5 条;页间隔与楼层间隔同规则(人像节奏)
+    private static void queueNextSubPage(String url, String body) {
+        try {
+            if (sExpandCount >= EXPAND_MAX_PER_RUN) return;
+            org.json.JSONObject o = new org.json.JSONObject(body);
+            org.json.JSONObject d = o.optJSONObject("data");
+            if (d == null || !d.optBoolean("has_more", false)) return;
+            org.json.JSONArray cs = d.optJSONArray("comments");
+            if (cs == null || cs.length() == 0) return;
+            org.json.JSONObject last = cs.optJSONObject(cs.length() - 1);
+            String startId = last == null ? null : last.optString("id", "");
+            if (startId == null || startId.isEmpty()) return;
+            final String noteId = queryParam(url, "note_id");
+            final String commentId = queryParam(url, "comment_id");
+            if (noteId == null || commentId == null) return;
+            final String start = startId;
+            final ClassLoader cl2 = appClassLoader;
+            if (!EXPANDED_ROOTS.add(noteId + "/" + commentId + "#p" + startId)) return;
+            EXPAND_POOL.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        long gap = nextGap() - (System.currentTimeMillis() - sLastExpandAt);
+                        if (gap > 0) Thread.sleep(gap);
+                        sLastExpandAt = System.currentTimeMillis();
+                        sExpandCount++;
+                        Object registry = serviceRegistry(cl2);
+                        Object svc = XposedHelpers.callMethod(registry, "b",
+                                cl2.loadClass("com.xingin.matrix.comment.model.service.CommentService"));
+                        Object obs = XposedHelpers.callMethod(svc, "getSubCommentsV3",
+                                noteId, commentId, start, 5, "", "", "", "", "", "", Boolean.FALSE);
+                        XposedHelpers.callMethod(obs, "subscribe");
+                        XposedBridge.log("[xhs-harvest] auto-expand next-page " + noteId + "/"
+                                + commentId + " start=" + start);
+                    } catch (Throwable t) {
+                        XposedBridge.log("[xhs-harvest] next-page err: " + t);
+                    }
+                }
+            });
+        } catch (Throwable ignored) {}
+    }
+
+
+    /** kr9.c 单例:f236068a 可能声明在父类/R8 重排,XposedHelpers 找不到时反射兜底 */
+    private static Object serviceRegistry(ClassLoader cl) throws Throwable {
+        Class<?> kls = cl.loadClass("kr9.c");
+        try {
+            return XposedHelpers.getStaticObjectField(kls, "f236068a");
+        } catch (Throwable ignored) {}
+        for (Class<?> c = kls; c != null; c = c.getSuperclass()) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())
+                        && f.getType().getName().equals(c.getName())) {
+                    f.setAccessible(true);
+                    return f.get(null);
+                }
+            }
+        }
+        throw new IllegalStateException("kr9.c registry not found");
+    }
+
+    private static String uriHost(String url) {
+        try {
+            java.net.URI u = java.net.URI.create(url);
+            return u.getScheme() + "://" + u.getHost();
+        } catch (Throwable t) {
+            return "https://edith.xiaohongshu.com";
+        }
+    }
+
+    /** 用宿主 client 发 GET;逐个尝试记住的 client,成功者记为 sApiClient。响应由我们自己的 interceptor 落盘。 */
+    private static String fetchViaHost(String urlStr) throws Throwable {
+        List<Object> tries = new java.util.ArrayList<>();
+        if (sApiClient != null) tries.add(sApiClient);
+        synchronized (HOST_CLIENTS) { tries.addAll(HOST_CLIENTS); }
+        Throwable last = null;
+        for (Object client : tries) {
+            try {
+                Class<?> rbCls = appClassLoader.loadClass("okhttp3.Request$Builder");
+                Object rb = rbCls.getDeclaredConstructor().newInstance();
+                XposedHelpers.callMethod(rb, "url", urlStr);
+                Object req = XposedHelpers.callMethod(rb, "build");
+                Object call = XposedHelpers.callMethod(client, "newCall", req);
+                Object resp = XposedHelpers.callMethod(call, "execute");
+                try {
+                    int code = (int) XposedHelpers.callMethod(resp, "code");
+                    Object body = XposedHelpers.callMethod(resp, "body");
+                    String text = body == null ? "" : (String) XposedHelpers.callMethod(body, "string");
+                    // HTTP 200 不够:业务码 -100(登录已过期)说明这个 client 没挂鉴权链,换下一个
+                    XposedBridge.log("[xhs-harvest] client try: code=" + code
+                            + " head=" + text.substring(0, Math.min(80, text.length())).replace('\n',' '));
+                    if (code == 200 && text.startsWith("{") && !text.contains("登录已过期")
+                            && !text.contains("\"success\":false")) {
+                        sApiClient = client;
+                        return text;
+                    }
+                } finally {
+                    try { XposedHelpers.callMethod(resp, "close"); } catch (Throwable ignored) {}
+                }
+            } catch (Throwable t) {
+                XposedBridge.log("[xhs-harvest] client try err: " + t);
+                last = t;
+            }
+        }
+        if (last != null) throw last;
+        return null;
     }
 
     // ---------- 1.8 视频保存(第三道门) ----------
@@ -286,6 +571,11 @@ public class XhsSaveFix implements IXposedHookLoadPackage {
 
         if (url.contains("/note/video/save")) {
             return patchVideoSaveResponse(url, body, response);
+        }
+
+        // 楼中楼子页:has_more=true 时排队下一页(start=本页最后一条子评论id)
+        if (url.contains("/note/comment/sub_comments")) {
+            queueNextSubPage(url, body);
         }
 
         // 缓存:noteId -> h264 mp4 直链
@@ -452,6 +742,10 @@ public class XhsSaveFix implements IXposedHookLoadPackage {
 
         String method = String.valueOf(XposedHelpers.callMethod(request, "method"));
         writeLine(buildJson(method, url, code, body));
+        // 楼中楼自动展开:主评论分页落盘后,把 sub_has_more 的楼排队拉全
+        if (url.contains("/note/comment/list")) {
+            autoExpandSubComments(url, body);
+        }
     }
 
     private static boolean matches(String url) {

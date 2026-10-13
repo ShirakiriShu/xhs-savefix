@@ -9,3 +9,10 @@ tools/harvest-out/
 
 # 逆向工作区(采集产物/APK/解包,体积大且含隐私)
 work/
+
+# 会话/缓存/快照(防隐私误提交)
+.zcode/
+__pycache__/
+litellm-venv/
+*.ndjson
+*.manifest.json

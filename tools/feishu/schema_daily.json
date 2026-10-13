@@ -1,0 +1,79 @@
+[
+ {
+  "name": "日期",
+  "type": "datetime"
+ },
+ {
+  "name": "新增线索数",
+  "type": "number",
+  "style": {
+   "type": "plain",
+   "precision": 0
+  }
+ },
+ {
+  "name": "高价值线索数",
+  "type": "number",
+  "style": {
+   "type": "plain",
+   "precision": 0
+  }
+ },
+ {
+  "name": "带联系方式线索数",
+  "type": "number",
+  "style": {
+   "type": "plain",
+   "precision": 0
+  }
+ },
+ {
+  "name": "联系方式覆盖率",
+  "type": "number",
+  "style": {
+   "type": "plain",
+   "precision": 1
+  },
+  "description": "存 0-100 的数字(如 42.9 表示 42.9%)"
+ },
+ {
+  "name": "招聘线索数",
+  "type": "number",
+  "style": {
+   "type": "plain",
+   "precision": 0
+  }
+ },
+ {
+  "name": "营销线索数",
+  "type": "number",
+  "style": {
+   "type": "plain",
+   "precision": 0
+  }
+ },
+ {
+  "name": "Top关键词",
+  "type": "text"
+ },
+ {
+  "name": "Top公司",
+  "type": "text"
+ },
+ {
+  "name": "推送状态",
+  "type": "select",
+  "multiple": false,
+  "options": [
+   {
+    "name": "成功"
+   },
+   {
+    "name": "失败"
+   },
+   {
+    "name": "未推送"
+   }
+  ]
+ }
+]

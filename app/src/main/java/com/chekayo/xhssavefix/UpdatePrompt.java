@@ -46,8 +46,8 @@ public final class UpdatePrompt {
     private static final long CHECK_INTERVAL_MS = 6L * 3600 * 1000; // 面板内 6h 内复用缓存
 
     /** 与 AndroidManifest versionName/versionCode 同步(更新检查比对基准) */
-    static final String MODULE_VERSION = "1.2.1";
-    static final int MODULE_VERSION_CODE = 4;
+    static final String MODULE_VERSION = "1.2.3";
+    static final int MODULE_VERSION_CODE = 6;
 
     /** 开源地址(面板里露出) */
     private static final String REPO_URL = "https://github.com/haikow/xhs-savefix";
