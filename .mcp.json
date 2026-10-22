@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "xhs-leads": {
-      "command": "/Users/a1234/xhs-savefix/tools/mcp/venv/bin/python",
-      "args": ["/Users/a1234/xhs-savefix/tools/mcp/server.py"]
-    }
-  }
-}
