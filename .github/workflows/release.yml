@@ -1,0 +1,98 @@
+name: Release
+
+# 打 tag 即构建并发布到 Releases;发布成功后自动删除该 tag。
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]*'
+
+permissions:
+  contents: write
+
+# 同一分支并发打 tag 时不排队,后一次直接取消前一次
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build & Release APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install build-tools and platform
+        run: |
+          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34"
+          yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Restore signing keystore
+        id: keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::warning::secrets.KEYSTORE_B64 未配置,使用临时 debug keystore 签名"
+            exit 0
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build APK
+        env:
+          KEYSTORE: ${{ steps.keystore.outputs.created == 'true' && runner.temp/release.keystore || '' }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE" ]; then
+            ./build.sh
+          else
+            KEYSTORE="$KEYSTORE" \
+            KEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
+            KEYSTORE_ALIAS="$KEYSTORE_ALIAS" \
+            ./build.sh
+          fi
+
+      - name: Verify APK
+        run: |
+          ls -la xhs-savefix.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs xhs-savefix.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xhs-savefix-apk
+          path: xhs-savefix.apk
+
+      - name: Create GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: xhs-savefix.apk
+          generate_release_notes: true
+          body: |
+            XHS SaveFix — 小红书解除「作者关闭保存」+ 去水印
+
+            - APK: `xhs-savefix.apk`
+            - 安装后需在 LSPosed 中启用模块并勾选作用域 `com.xingin.xhs`
+            - 每次更新后需强制停止小红书再重新打开
+
+      - name: Delete tag
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          git push origin ":refs/tags/$TAG" || echo "::warning::tag 删除失败(可能已被删除)"
+          echo "已删除 tag: $TAG"

@@ -25,10 +25,14 @@ ANDROID_JAR="$(ls "$SDK"/platforms/*/android.jar 2>/dev/null | sort -V | tail -1
 echo "SDK = $SDK  BT = $BT"
 
 # Keystore
+# 优先用 KEYSTORE 环境变量(CI 传入 secrets 里的 keystore 文件);
+# 其次用项目内 debug.keystore;都没有就临时生成一个。
 KS="${KEYSTORE:-$PROJ/debug.keystore}"
+KS_PASS="${KEYSTORE_PASSWORD:-android}"
+KS_ALIAS="${KEYSTORE_ALIAS:-androiddebugkey}"
 if [[ ! -f "$KS" ]]; then
-  "$KEYTOOL" -genkeypair -v -keystore "$KS" -storepass android -alias androiddebugkey \
-    -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Debug,O=Debug,C=US' >/dev/null 2>&1
+  "$KEYTOOL" -genkeypair -v -keystore "$KS" -storepass "$KS_PASS" -alias "$KS_ALIAS" \
+    -keypass "$KS_PASS" -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Debug,O=Debug,C=US' >/dev/null 2>&1
 fi
 
 rm -rf "$BUILD"; mkdir -p "$BUILD/stubs" "$BUILD/app"
@@ -59,8 +63,8 @@ echo "== 6. zipalign =="
 "$ZIPALIGN" -p -f 4 "$BUILD/app-unsigned.apk" "$BUILD/app-aligned.apk"
 
 echo "== 7. apksigner sign =="
-"$APKSIGNER" sign --ks "$KS" --ks-pass pass:android --ks-key-alias androiddebugkey \
-  --key-pass pass:android --out "$PROJ/xhs-savefix.apk" "$BUILD/app-aligned.apk"
+"$APKSIGNER" sign --ks "$KS" --ks-pass "pass:$KS_PASS" --ks-key-alias "$KS_ALIAS" \
+  --key-pass "pass:$KS_PASS" --out "$PROJ/xhs-savefix.apk" "$BUILD/app-aligned.apk"
 
 echo "== DONE =="
 APK_SIZE="$(stat -f%z "$PROJ/xhs-savefix.apk" 2>/dev/null || stat -c%s "$PROJ/xhs-savefix.apk")"
