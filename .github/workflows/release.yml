@@ -47,11 +47,11 @@ jobs:
             exit 0
           fi
           echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "path=$RUNNER_TEMP/release.keystore" >> "$GITHUB_OUTPUT"
 
       - name: Build APK
         env:
-          KEYSTORE: ${{ steps.keystore.outputs.created == 'true' && runner.temp/release.keystore || '' }}
+          KEYSTORE: ${{ steps.keystore.outputs.path }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
         run: |
