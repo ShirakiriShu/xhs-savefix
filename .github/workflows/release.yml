@@ -1,6 +1,8 @@
 name: Release
 
-# 打 tag 即构建并发布到 Releases;发布成功后自动删除该 tag。
+# 打 tag 即构建并发布到 Releases;发布后保留该 tag
+# (GitHub 在 tag 被删除时会把已发布的 release 自动转成 draft,所以这里不再删 tag;
+#  需要重新构建同一版本时,手动删除远端 tag 再重新 push 即可再次触发。)
 on:
   push:
     tags:
@@ -86,18 +88,11 @@ jobs:
         with:
           files: xhs-savefix.apk
           generate_release_notes: true
+          # 显式要求"已发布"而非草稿;若同名 release 已是草稿,action 会先发布它再上传附件
+          draft: false
           body: |
             XHS SaveFix — 小红书解除「作者关闭保存」+ 去水印
 
             - APK: `xhs-savefix.apk`
             - 安装后需在 LSPosed 中启用模块并勾选作用域 `com.xingin.xhs`
             - 每次更新后需强制停止小红书再重新打开
-
-      - name: Delete tag
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          git push origin ":refs/tags/$TAG" || echo "::warning::tag 删除失败(可能已被删除)"
-          echo "已删除 tag: $TAG"
