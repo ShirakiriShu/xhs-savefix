@@ -31,11 +31,16 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # v3 的默认 packages 是 "tools platform-tools",而 `tools` 包已从 SDK 仓库下架,
+          # setup-android 内部执行 `sdkmanager tools` 会报 "Failed to find package 'tools'"
+          # 并以退出码 1 结束,导致整个 job 失败。这里显式覆盖掉 `tools`。
+          packages: 'platform-tools'
 
       - name: Install build-tools and platform
         run: |
-          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34"
           yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34"
 
       - name: Restore signing keystore
         id: keystore
